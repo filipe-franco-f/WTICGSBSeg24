@@ -90,7 +90,7 @@ class Node:
         total_stake = int(os.getenv("TOTAL_STAKE", 25))
 
         params = BlockChainParameters(round_time=round_time, tolerance=tolerance, tau=tau, total_stake=total_stake)
-        self.bc: BlockChain = BlockChain(params, genesis=genesis)
+        self.bc: BlockChain = BlockChain(params, genesis=genesis, node_id=self.id)
         self.state = State.LISTENING
         self.missed_blocks: list[tuple[Block, bytes]] = []
         self.received_resync_blocks: list[Block] = []
@@ -131,7 +131,7 @@ class Node:
             self.logger.debug(f"broadcasting {msg}")
         else:
             self.logger.debug(f"sending {msg} to peer {dest_peer_id.hex()[0:8]}")
-        self.network.send(dest_peer_id, msg.serialize())
+        return self.network.send(dest_peer_id, msg.serialize())
 
     def read_message(self) -> Optional[Message]:
         raw = self.network.read()
@@ -220,7 +220,7 @@ class Node:
 
         while len(self.network.known_peers) > self.maximum_num_peers:
             random_peer_id = random.sample(self.network.known_peers, 1)[0]
-            self.logger.debug(f" Too many peers: {len(self.network.known_peers)}, forgetting peer: {random_peer_id.hex()[0:8]}")
+            self.logger.info(f" Too many peers: {len(self.network.known_peers)}, forgetting peer: {random_peer_id.hex()[0:8]}")
             self.send_message(random_peer_id, PeerForgetRequest(self.id))
             self.network.forget_peer(random_peer_id)
 
@@ -237,11 +237,19 @@ class Node:
             
             # if we detect a fork, resync with a node that sent a random missed block
             if self.state == State.LISTENING and self.bc.fork_detected and self.missed_blocks:
-                missed: tuple[Block, bytes] = random.choice(self.missed_blocks)
-                self.missed_blocks.remove(missed)
-                # Start by asking for its last block
-                request_index = -1
-                self.send_message(missed[1], ResyncRequest(self.id, request_index))
+                stopResyncing = False
+                while True:
+                    if len(self.missed_blocks) == 0:
+                        stopResyncing = True
+                        break
+                    missed: tuple[Block, bytes] = random.choice(self.missed_blocks)
+                    self.missed_blocks.remove(missed)
+                    # Start by asking for its last block
+                    request_index = -1
+                    if self.send_message(missed[1], ResyncRequest(self.id, request_index)):
+                        break
+                if stopResyncing:
+                    continue
                 self.state = State.RESYNCING
                 self.logger.info("started resyncing")
 
@@ -286,7 +294,7 @@ class Node:
                     else:
                         self.send_message(peer_id, ResyncResponse(None))
                 if isinstance(msg, PeerForgetRequest):
-                    self.logger.debug(f"Received forget request from: {msg.peer_id.hex()[0:8]}")
+                    self.logger.info(f"Received forget request from: {msg.peer_id.hex()[0:8]}")
                     self.network.forget_peer(msg.peer_id)
 
             if self.state == State.RESYNCING:
@@ -338,7 +346,7 @@ class Node:
 
     def start(self):
         self.should_halt = False
-        self.logger.debug(f"peerlist: {self.network.known_peers}")
+        self.logger.debug(f"peerlist: {sorted([i.hex()[0:8] for i in self.network.known_peers])}")
         self.greet_peers()
         self.loop()
 
